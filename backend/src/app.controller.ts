@@ -8,13 +8,12 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { extname } from 'path';
 import { AppService } from './app.service';
-import { moderateContent } from './agent';
+import { SubLogService } from './submission-log.service';
 
 @Controller()
 export class AppController {
-  constructor(private readonly appService: AppService) { }
+  constructor(private readonly appService: AppService, private readonly subLogService: SubLogService) { }
 
   @Get()
   getHello(): string {
@@ -27,6 +26,17 @@ export class AppController {
     @UploadedFile() file: any | undefined,
     @Body() body: any,
   ) {
-    return await this.appService.moderateSubmission(file, body);
+    const result = await this.appService.moderateSubmission(file, body);
+
+    const type = (body?.type as string | undefined)?.toLowerCase();
+    await this.subLogService.addLog(
+      type as string,
+      body?.text ? body?.text : null,
+      result.analysis,
+      result.classification,
+      result.explanation ? result.explanation : null,
+    );
+
+    return result;
   }
 }
