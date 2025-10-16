@@ -27,32 +27,6 @@ export class AppController {
     @UploadedFile() file: any | undefined,
     @Body() body: any,
   ) {
-    const type = (body?.type as string | undefined)?.toLowerCase();
-
-    if (type === 'text') {
-      const text = (body?.text as string | undefined) ?? '';
-      if (!text.trim()) {
-        throw new BadRequestException('Missing text for text submission');
-      }
-
-      return await moderateContent({ type: 'text', text })
-    }
-
-    if (type === 'image') {
-      if (!file) {
-        throw new BadRequestException('Missing file for image submission');
-      }
-      const extension = extname((file?.originalname as string) || '').replace(/^\./, '');
-
-      const buffer: Buffer | undefined = (file?.buffer as Buffer | undefined);
-      if (!buffer) {
-        throw new BadRequestException('Uploaded file has no buffer');
-      }
-      return await moderateContent({ type: 'image', buffer, filename: file.originalname, mimetype: file.mimetype });
-
-    }
-
-    throw new BadRequestException('Unsupported or missing payload.');
+    return await this.appService.moderateSubmission(file, body);
   }
-
 }
