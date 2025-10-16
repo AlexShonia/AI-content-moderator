@@ -10,6 +10,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { extname } from 'path';
 import { AppService } from './app.service';
+import { moderateContent } from './agent';
 
 @Controller()
 export class AppController {
@@ -22,7 +23,7 @@ export class AppController {
 
   @Post('submit')
   @UseInterceptors(FileInterceptor('file'))
-  submit(
+  async submit(
     @UploadedFile() file: any | undefined,
     @Body() body: any,
   ) {
@@ -33,8 +34,8 @@ export class AppController {
       if (!text.trim()) {
         throw new BadRequestException('Missing text for text submission');
       }
-      console.log('[submit] text:', text);
-      return { ok: true, received: 'text' };
+
+      return await moderateContent({ type: 'text', text })
     }
 
     if (type === 'image') {
@@ -42,8 +43,13 @@ export class AppController {
         throw new BadRequestException('Missing file for image submission');
       }
       const extension = extname((file?.originalname as string) || '').replace(/^\./, '');
-      console.log('[submit] image extension:', extension);
-      return { ok: true, received: 'image', extension };
+
+      const buffer: Buffer | undefined = (file?.buffer as Buffer | undefined);
+      if (!buffer) {
+        throw new BadRequestException('Uploaded file has no buffer');
+      }
+      return await moderateContent({ type: 'image', buffer, filename: file.originalname, mimetype: file.mimetype });
+
     }
 
     throw new BadRequestException('Unsupported or missing payload.');

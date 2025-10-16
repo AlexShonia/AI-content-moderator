@@ -1,24 +1,38 @@
-import { redirect } from "next/navigation";
-
-import { createClient } from "@/lib/supabase/server";
+"use client"
 import { InfoIcon } from "lucide-react";
 import SubmitForm from "@/components/submit-form";
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 
-export default async function ProtectedPage() {
-    const supabase = await createClient();
+export default function ProtectedPage() {
+    const router = useRouter();
 
-    const { data, error } = await supabase.auth.getClaims();
-    if (error || !data?.claims) {
-        redirect("/auth/login");
-    }
+    useEffect(() => {
+        (async () => {
+            try {
+                const res = await fetch("/api/user", { credentials: "include" });
+                if (!res.ok) {
+                    router.replace("/auth/login");
+                    return;
+                }
+                const { user } = await res.json();
+
+                if (!user?.claims) {
+                    router.replace("/auth/login");
+                }
+            } catch {
+                router.replace("/auth/login");
+            }
+        })();
+    }, [router]);
+
 
     return (
         <div className="flex-1 w-full flex flex-col gap-12">
             <div className="w-full">
                 <div className="bg-accent text-sm p-3 px-5 rounded-md text-foreground flex gap-3 items-center">
                     <InfoIcon size="16" strokeWidth={2} />
-                    This is a moderator page that you can only see as an authenticated
-                    user
+                    This is a moderator page that you can only see as an authenticated user
                 </div>
             </div>
             <div className="flex flex-col gap-2 items-start">
