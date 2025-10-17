@@ -2,21 +2,21 @@ import { Annotation, StateGraph, END, START } from "@langchain/langgraph";
 import { z } from "zod";
 import { HumanMessage, SystemMessage, AIMessage } from "@langchain/core/messages";
 import { ChatOpenAI } from "@langchain/openai";
-import { tool } from "node_modules/@langchain/core/tools";
 
 
-type Input =
+
+type AnalyzeInput =
     | { type: "text"; text: string }
     | { type: "image"; buffer: Buffer; filename?: string; mimetype?: string };
 
-const AgentState = Annotation.Root({
-    input: Annotation<Input>,
+const StateAnnotation = Annotation.Root({
+    input: Annotation<AnalyzeInput>,
     analysis: Annotation<string>,
     classification: Annotation<string>,
-    lastResponse: Annotation<AIMessage | undefined>,
+    explanation: Annotation<string>,
 });
 
-export async function moderateContent(input: Input) {
+export async function moderateContent(input: AnalyzeInput) {
 
     function getRules() {
         // In a real implementation, will fetch from a database or API
@@ -45,19 +45,20 @@ export async function moderateContent(input: Input) {
         throw new Error(`Invalid input: ${parsedInput.error.message}`);
     }
 
-    const toolModel = new ChatOpenAI({
+    const model = new ChatOpenAI({
         apiKey: process.env.OPENAI_API_KEY,
         model: "gpt-4o-mini",
         temperature: 0,
         maxTokens: 512,
-    })
+    });
 
-    const analyzeContentTool = tool(async (state: typeof AgentState.State) => {
+    async function analyzeContent(state: typeof StateAnnotation.State) {
+        console.log("analyzing state: ", state);
 
         let response: AIMessage | undefined;
         try {
             if (state.input.type === "text") {
-                response = await toolModel.invoke([
+                response = await model.invoke([
                     new SystemMessage("You are a Text Analyzer. Be concise and neutral."),
                     new HumanMessage({
                         content: `Analyze the following text and summarize any policy-relevant signals: "${state.input.text}"`,
@@ -68,7 +69,7 @@ export async function moderateContent(input: Input) {
                 const mimetype = state.input.mimetype || "image/png";
 
                 try {
-                    response = await toolModel.invoke([
+                    response = await model.invoke([
                         new SystemMessage("You are an Image Analyzer. Be concise and neutral."),
                         new HumanMessage({
                             content: [
@@ -106,15 +107,17 @@ export async function moderateContent(input: Input) {
             return { analysis: "" };
         }
 
+        console.log("analysis response: ", response);
         return { analysis: response?.content };
-    }, { name: "analyze_content", description: "Analyze content for policy-relevant signals" });
+    }
 
-
-    const classifyContentTool = tool(async (state: typeof AgentState.State) => {
+    async function classifyDecision(state: typeof StateAnnotation.State) {
         const analysis = state.analysis || "No analysis available";
+        console.log("classify state: ", state);
+
 
         try {
-            const response = await toolModel.invoke([
+            const response = await model.invoke([
                 new SystemMessage(
                     `You are a content classification agent. Classify the content as 'approved', 'flagged for review', or 'rejected', based on the latest rules. ${JSON.stringify(
                         getRules()
@@ -128,94 +131,58 @@ export async function moderateContent(input: Input) {
             console.error("classifyDecision error:", err);
             return { classification: "flagged" };
         }
-    }, { name: "classify_decision", description: "Classify content based on analysis" });
-
-
-    const tools = [analyzeContentTool, classifyContentTool];
-
-    async function toolRouter(state: typeof AgentState.State) {
-        const last = state.lastResponse;
-        if (!last?.tool_calls?.length) {
-            return {};
-        }
-
-        for (const call of last.tool_calls) {
-
-            if (call.name === "analyze_content") {
-                const result = await analyzeContentTool.func(state);
-                return { analysis: result.analysis };
-            }
-            if (call.name === "classify_decision") {
-                const result = await classifyContentTool.func(state);
-                return { classification: result.classification };
-            }
-        }
-
-        return {};
     }
 
-    const agentModel = new ChatOpenAI({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: "gpt-4o-mini",
-        temperature: 0,
-        maxTokens: 1024
-    }).bindTools(tools);
+    async function explainFlaggedContent(state: typeof StateAnnotation.State) {
+        console.log("explain state: ", { classification: state.classification, hasAnalysis: !!state.analysis });
+        const promptAnalysis = state.analysis || "No prior analysis available.";
+        const classification = (state.classification || "flagged").toString();
 
-    async function agentNode(state: typeof AgentState.State) {
+        try {
+            const response = await model.invoke([
+                new SystemMessage(
+                    "You are a content moderation assistant. Briefly explain in one or two sentences why the content may require a manual review."
+                ),
+                new HumanMessage({ content: `${promptAnalysis}\nClassification: ${classification}` }),
+            ]);
 
+            console.log("analysis: ", response);
 
-        const response = await agentModel.invoke([
-            new SystemMessage(`
-                You are a moderation agent controlling a content moderation workflow.
-
-                Rules:
-                - If there is NO analysis yet, call the tool "analyze_content".
-                - If analysis exists but NO classification yet, call "classify_decision".
-                - If classification already exists, respond with the word "finish" (no tool call).
-                
-                Tools available:
-                - analyze_content: analyze the input content for policy-relevant signals.
-                - classify_decision: classify content based on analysis.
-            `),
-
-            new HumanMessage({
-                content: `
-                Current input: ${JSON.stringify(state.input.type === "text" ? state.input.text : "User submitted an image")}
-                Analysis: ${state.analysis || "none"}
-                Classification: ${state.classification || "none"}
-            `,
-            }),
-        ]);
-
-        return { lastResponse: response };
+            return { explanation: response.content };
+        } catch (err) {
+            console.error("explainFlaggedContent error:", err);
+            return { explanation: "Additional review recommended, but an explanation could not be generated." };
+        }
     }
 
-    function shouldContinue(state: typeof AgentState.State) {
-        const last = state.lastResponse;
+    function shouldExplain(state: typeof StateAnnotation.State) {
+        console.log("should explain state: ", { classification: state.classification });
+        const cls = (state.classification || "").toString().toLowerCase().trim();
 
-        if (last?.tool_calls?.length) {
-            return "toolRouter";
+        // pesudo-random logic for demo purposes
+        if (cls.includes("flag")) {
+            const reasonUnclear = Math.random() < 0.5;
+            if (reasonUnclear) return "explain_flagged_content";
         }
-
         return END;
     }
 
-
-    const workflow = new StateGraph(AgentState)
-        .addNode("agent", agentNode)
-        .addNode("toolRouter", toolRouter)
-        .addEdge(START, "agent")
-        .addConditionalEdges("agent", shouldContinue, ["toolRouter", END])
-        .addEdge("toolRouter", "agent")
-
+    const workflow = new StateGraph(StateAnnotation)
+        .addNode("analyze_content", analyzeContent)
+        .addNode("classify_decision", classifyDecision)
+        .addNode("explain_flagged_content", explainFlaggedContent)
+        .addEdge(START, "analyze_content")
+        .addEdge("analyze_content", "classify_decision")
+        .addConditionalEdges("classify_decision", shouldExplain)
+        .addEdge("explain_flagged_content", END);
 
     const app = workflow.compile();
 
     try {
         const response = await app.invoke({ input: parsedInput.data });
-        return { classification: response.classification, analysis: response.analysis };
+        return { classification: response.classification, analysis: response.analysis, explanation: response.explanation };
     } catch (err) {
         console.error("moderateContent workflow error:", err);
-        return { analysis: "", classification: "flagged" } as any;
+        return { analysis: "", classification: "flagged", explanation: undefined } as any;
     }
 }
